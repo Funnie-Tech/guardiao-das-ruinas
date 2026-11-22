@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Warrior: 8 direções isométricas</title>
+<style>
+  body { margin: 0; padding: 16px; background: #1b1e2b; color: #d8d4e8; font: 14px/1.5 system-ui, sans-serif;
+         display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; align-items: flex-start; }
+  canvas, img { image-rendering: pixelated; }
+  canvas { background: #2c3a35; border-radius: 6px; max-width: 100%; touch-action: none; cursor: crosshair; }
+  aside { max-width: 300px; }
+  button { background: #262a3c; border: 2px solid transparent; border-radius: 6px; color: inherit;
+           font: inherit; padding: 4px 8px; cursor: pointer; }
+  button.on { border-color: #f0a030; }
+  #compass { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  #compass button { padding: 4px; }
+  /* os sprites têm margem para caber o giro e o pulo; aqui mostramos só o personagem */
+  #compass img { display: block; margin: auto; width: 84px; height: 104px; object-fit: none; }
+  #anims { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  kbd { background: #262a3c; border-radius: 3px; padding: 0 5px; }
+  p { margin: 12px 0 0; }
+</style>
+<canvas id="c" width="760" height="560"></canvas>
+<aside>
+  <div id="compass"></div>
+  <div id="anims"></div>
+  <p><kbd>WASD</kbd>/setas andam, <kbd>Shift</kbd> corre, <kbd>J</kbd> corte diagonal, <kbd>L</kbd> estocada, <kbd>K</kbd> ataque giratório, <kbd>Espaço</kbd> pula.
+     Clique no chão para ir até o ponto. Os botões acima mostram cada animação em cada ângulo.</p>
+  <p id="info"></p>
+</aside>
+<script src="sprites/meta.js"></script>
+<script>
+const M = SPRITE_META, SCALE = 2, TILE = 96;  // TILE = largura do losango em px
+const SPEED = { walk: 115, run: 250 };        // px/s no chão
+const LABEL = { idle: 'Parado', walk: 'Andar', run: 'Correr', attack: 'Corte', thrust: 'Estocada', spin: 'Giro', jump: 'Pulo' };
+// M.ms[anim] = duração de cada frame em ms (o corte segura a armação e o final de propósito)
+const total = a => M.ms[a].reduce((s, v) => s + v, 0);
+// frame mostrado t ms depois do início da animação, ou -1 se ela já terminou
+function frameAt(a, t) { for (let i = 0; i < M.ms[a].length; i++) { t -= M.ms[a][i]; if (t < 0) return i; } return -1; }
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const img = src => Object.assign(new Image(), { src });
+// frames[anim][índice da direção][frame]
+const frames = Object.fromEntries(Object.entries(M.anims).map(([a, n]) => [a, M.dirs.map(d =>
+  Array.from({ length: n }, (_, f) => img(a === 'idle' ? `sprites/warrior_${d}.png` : `sprites/${a}/${d}/${f}.png`)))]));
+const pos = { x: cv.width / 2, y: cv.height / 2 + 80 }, keys = new Set();
+let dir = 0, target = null, walked = 0;
+let preview = { anim: 'walk', spin: true, t0: performance.now() };  // vitrine em loop; null quando o jogador assume
+let act = null;                                                     // ação de uma vez em andamento: { anim, t0 }
+
+const compass = document.getElementById('compass'), dirBtns = {}, animBtns = {};
+for (const d of ['NW', 'N', 'NE', 'W', null, 'E', 'SW', 'S', 'SE']) {
+  if (!d) { compass.append(document.createElement('span')); continue; }
+  const b = dirBtns[d] = document.createElement('button');
+  b.innerHTML = `<img src="sprites/warrior_${d}.png" alt="">${d}`;
+  b.firstChild.style.objectPosition = `${42 - M.anchor[0]}px ${94 - M.anchor[1]}px`;  // recorta em volta dos pés
+  b.onclick = () => { dir = M.dirs.indexOf(d); preview = { anim: preview ? preview.anim : 'walk', spin: false, t0: performance.now() }; act = target = null; };
+  compass.append(b);
+}
+for (const a in M.anims) {
+  const b = animBtns[a] = document.createElement('button');
+  b.textContent = `${LABEL[a]} (${M.anims[a]})`;
+  b.onclick = () => { preview = { anim: a, spin: preview ? preview.spin : false, t0: performance.now() }; act = target = null; };
+  document.getElementById('anims').append(b);
+}
+document.getElementById('info').textContent =
+  `Câmera ortográfica, elevação ${M.elevationDeg.toFixed(3)}° (isométrico verdadeiro). ` +
+  `Losango do chão 1 : ${M.tileRatio.toFixed(3)}. Sprites ${M.w}×${M.h}px, ${M.colors} cores, exibidos em ${SCALE}×.`;
+
+// Vetor no chão (wy positivo = em direção à câmera) -> índice em M.dirs (S, SE, E, ... a cada 45°)
+const face = (wx, wy) => ((Math.round((Math.PI / 2 - Math.atan2(wy, wx)) / (Math.PI / 4)) % 8) + 8) % 8;
+const ACTION = { Space: 'jump', KeyJ: 'attack', KeyL: 'thrust', KeyK: 'spin' };
+
+addEventListener('keydown', e => {
+  if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
+  keys.add(e.code);
+  if (ACTION[e.code] && !act) { act = { anim: ACTION[e.code], t0: performance.now() }; preview = null; }
+});
+addEventListener('keyup', e => keys.delete(e.code));
+cv.addEventListener('pointerdown', e => {
+  const r = cv.getBoundingClientRect();
+  target = { x: (e.clientX - r.left) * cv.width / r.width, y: (e.clientY - r.top) * cv.height / r.height };
+  preview = null;
+});
+
+let last = performance.now();
+function frame() {
+  // Mesmo relógio dos t0 gravados nos cliques e teclas. O carimbo que o requestAnimationFrame passa é o início
+  // do quadro e pode ser anterior a eles, o que dava tempo decorrido negativo e direção -1.
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  const k = (a, b) => keys.has(a) || keys.has(b);
+  // wx, wy em unidades do chão: a tela achata a profundidade por tileRatio
+  let wx = k('ArrowRight', 'KeyD') - k('ArrowLeft', 'KeyA'), wy = k('ArrowDown', 'KeyS') - k('ArrowUp', 'KeyW');
+  if (wx || wy) { target = null; preview = null; }
+  else if (target) { wx = target.x - pos.x; wy = (target.y - pos.y) / M.tileRatio; }
+  if (act && frameAt(act.anim, now - act.t0) < 0) act = null;
+
+  let anim = 'idle', f = 0;
+  if (preview) {
+    const t = now - preview.t0, len = total(preview.anim);
+    if (preview.spin) dir = Math.floor(t / len) % 8;  // um ciclo completo por direção
+    anim = preview.anim; f = frameAt(anim, t % len);
+  } else {
+    const rooted = act && act.anim !== 'jump';      // os ataques prendem o personagem; o pulo mantém o movimento
+    const n = rooted ? 0 : Math.hypot(wx, wy);
+    if (n > 0.5) {
+      const gait = k('ShiftLeft', 'ShiftRight') ? 'run' : 'walk';
+      const d = target ? Math.min(n, SPEED[gait] * dt) : SPEED[gait] * dt;
+      dir = face(wx, wy);
+      pos.x = Math.max(60, Math.min(cv.width - 60, pos.x + wx / n * d));
+      pos.y = Math.max(250, Math.min(cv.height - 20, pos.y + wy / n * d * M.tileRatio));
+      if (target && n <= SPEED[gait] * dt) target = null;
+      // O frame avança com a distância percorrida (M.stride px por ciclo), então os pés não deslizam
+      walked += d;
+      anim = gait; f = Math.floor(walked / (M.stride[gait] * SCALE) * M.anims[gait]) % M.anims[gait];
+    } else { target = null; walked = 0; }
+    if (act) { anim = act.anim; f = frameAt(anim, now - act.t0); }
+  }
+
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const hw = TILE / 2, hh = hw * M.tileRatio, cx = cv.width / 2, cy = cv.height / 2, m = 14;
+  ctx.strokeStyle = '#41564c'; ctx.beginPath();
+  for (let i = -m; i <= m; i++) {
+    const x = cx + i * TILE;
+    ctx.moveTo(x - m * hw, cy - m * hh); ctx.lineTo(x + m * hw, cy + m * hh);
+    ctx.moveTo(x - m * hw, cy + m * hh); ctx.lineTo(x + m * hw, cy - m * hh);
+  }
+  ctx.stroke();
+  const px = Math.round(pos.x), py = Math.round(pos.y);
+  ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.beginPath();
+  ctx.ellipse(px, py, 15 * SCALE, 15 * SCALE * M.tileRatio, 0, 0, 7); ctx.fill();
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(frames[anim][dir][f], px - Math.round(M.anchor[0] * SCALE), py - Math.round(M.anchor[1] * SCALE), M.w * SCALE, M.h * SCALE);
+  for (const d in dirBtns) dirBtns[d].classList.toggle('on', d === M.dirs[dir]);
+  for (const a in animBtns) animBtns[a].classList.toggle('on', a === anim);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</html>

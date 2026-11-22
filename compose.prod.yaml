@@ -1,0 +1,20 @@
+# Git stack `guardiao-das-ruinas` on vps-bart (Dockhand clones `main` and builds here).
+# Isolated: the only network is guardiao-network, which is internal (no route out) and shared with nothing but
+# the proxy (NPM), which forwards guardiao-das-ruinas.funnie.dev -> guardiao-das-ruinas-app:80.
+services:
+  app:
+    build: .
+    image: guardiao-das-ruinas:latest
+    container_name: guardiao-das-ruinas-app
+    restart: unless-stopped
+    networks:
+      - guardiao
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+networks:
+  guardiao:
+    external: true
+    name: guardiao-network

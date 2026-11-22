@@ -1,0 +1,4 @@
+legacy/
+__pycache__/
+*.blend1
+.claude/
